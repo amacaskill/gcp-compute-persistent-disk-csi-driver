@@ -824,7 +824,7 @@ func TestListVolumeArgs(t *testing.T) {
 	}
 }
 
-func TestCreateVolumeWithVolumeSource(t *testing.T) {
+func TestCreateVolumeWithVolumeSourceFromSnapshot(t *testing.T) {
 	// Define test cases
 	testCases := []struct {
 		name            string
@@ -897,6 +897,114 @@ func TestCreateVolumeWithVolumeSource(t *testing.T) {
 			t.Fatalf("Expected volume content source to have snapshot ID, got none")
 		}
 
+	}
+}
+
+func TestCreateVolumeWithVolumeSourceFromVolume(t *testing.T) {
+	testSourceVolumeName := "test-volume-source-name"
+	testVolumeSourceID := fmt.Sprintf("projects/%s/zones/%s/disks/%s", project, zone, testSourceVolumeName)
+	testVolumeSourceIDDifferentZone := fmt.Sprintf("projects/%s/zones/%s/disks/%s", project, "different-zone", testSourceVolumeName)
+	// Define test cases
+	testCases := []struct {
+		name           string
+		project        string
+		volKey         *meta.Key
+		volumeOnCloud  bool
+		expErrCode     codes.Code
+		sourceVolumeID string
+		parameters     map[string]string
+	}{
+		{
+			name:           "success with data source of volume type",
+			project:        "test-project",
+			volKey:         meta.ZonalKey("my-disk", zone),
+			volumeOnCloud:  true,
+			sourceVolumeID: testVolumeSourceID,
+		},
+		{
+			name:           "fail with data source of volume type that doesn't exist",
+			project:        "test-project",
+			volKey:         meta.ZonalKey("my-disk", zone),
+			volumeOnCloud:  false,
+			expErrCode:     codes.NotFound,
+			sourceVolumeID: testVolumeSourceID,
+		},
+		{
+			name:           "fail with data source of volume type with invalid volume id format",
+			project:        "test-project",
+			volKey:         meta.ZonalKey("my-disk", zone),
+			volumeOnCloud:  false,
+			expErrCode:     codes.InvalidArgument,
+			sourceVolumeID: testVolumeSourceID + "invalid/format",
+		},
+		{
+			name:           "fail with data source of volume type with invalid disk parameters",
+			project:        "test-project",
+			volKey:         meta.ZonalKey("my-disk", zone),
+			volumeOnCloud:  true,
+			expErrCode:     codes.InvalidArgument,
+			sourceVolumeID: testVolumeSourceIDDifferentZone,
+			parameters: map[string]string{
+				common.ParameterKeyType: "different-type",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Logf("test case: %s", tc.name)
+		gceDriver := initGCEDriver(t, nil)
+
+		req := &csi.CreateVolumeRequest{
+			Name:               name,
+			CapacityRange:      stdCapRange,
+			VolumeCapabilities: stdVolCaps,
+			Parameters:         stdParams,
+			VolumeContentSource: &csi.VolumeContentSource{
+				Type: &csi.VolumeContentSource_Volume{
+					Volume: &csi.VolumeContentSource_VolumeSource{
+						VolumeId: tc.sourceVolumeID,
+					},
+				},
+			},
+		}
+
+		sourceVolumeRequest := &csi.CreateVolumeRequest{
+			Name:               testSourceVolumeName,
+			CapacityRange:      stdCapRange,
+			VolumeCapabilities: stdVolCaps,
+			Parameters:         stdParams,
+		}
+		if tc.parameters != nil {
+			sourceVolumeRequest.Parameters = tc.parameters
+		}
+
+		if tc.volumeOnCloud {
+			// Create the source volume.
+			gceDriver.cs.CreateVolume(context.Background(), sourceVolumeRequest)
+		}
+		resp, err := gceDriver.cs.CreateVolume(context.Background(), req)
+		t.Logf("response: %v err: %v", resp, err)
+		if err != nil {
+			serverError, ok := status.FromError(err)
+			if !ok {
+				t.Fatalf("Could not get error status code from err: %v", serverError)
+			}
+			if serverError.Code() != tc.expErrCode {
+				t.Fatalf("Expected error code: %v, got: %v. err : %v", tc.expErrCode, serverError.Code(), err)
+			}
+			continue
+		}
+		if tc.expErrCode != codes.OK {
+			t.Fatalf("Expected error: %v, got no error", tc.expErrCode)
+		}
+
+		// Make sure the response has the source volume.
+		sourceVolume := resp.GetVolume()
+		t.Logf("response has source volume: %v ", sourceVolume)
+		if sourceVolume.ContentSource == nil || sourceVolume.ContentSource.Type == nil ||
+			sourceVolume.ContentSource.GetVolume() == nil || sourceVolume.ContentSource.GetVolume().VolumeId == "" {
+			t.Fatalf("Expected volume content source to have volume ID, got none")
+		}
 	}
 }
 

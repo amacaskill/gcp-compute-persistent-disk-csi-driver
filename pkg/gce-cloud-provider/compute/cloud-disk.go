@@ -177,6 +177,17 @@ func (d *CloudDisk) GetSnapshotId() string {
 	}
 }
 
+func (d *CloudDisk) GetDiskId() string {
+	switch {
+	case d.disk != nil:
+		return d.disk.SourceDiskId
+	case d.betaDisk != nil:
+		return d.betaDisk.SourceDiskId
+	default:
+		return ""
+	}
+}
+
 func (d *CloudDisk) GetKMSKeyName() string {
 	switch {
 	case d.disk != nil:
