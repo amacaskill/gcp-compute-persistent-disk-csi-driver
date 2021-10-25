@@ -207,35 +207,40 @@ func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.Cre
 
 		if content.GetVolume() != nil {
 			volumeContentSourceVolumeID = content.GetVolume().GetVolumeId()
-
 			// Verify that the source VolumeID is in the correct format.
-			project, volKey, err := common.VolumeIDToKey(volumeContentSourceVolumeID)
+			_, _, err := common.VolumeIDToKey(volumeContentSourceVolumeID)
 			if err != nil {
 				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("CreateVolume source volume ID is invalid: %v", err))
 			}
-			// Verify that the volume in VolumeContentSource exists.
-			diskFromSourceVolume, err := gceCS.CloudProvider.GetDisk(ctx, project, volKey, gceAPIVersion)
-			if err != nil {
-				if gce.IsGCEError(err, "notFound") {
-					return nil, status.Errorf(codes.NotFound, "CreateVolume source volume %s does not exist", volumeContentSourceVolumeID)
-				} else {
-					return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume unknown get disk error when validating: %v", err))
-				}
+			// Verify the volume in VolumeContentSource exists.
+			if acquired := gceCS.volumeLocks.TryAcquire(volumeContentSourceVolumeID); acquired {
+				return nil, status.Errorf(codes.NotFound, "CreateVolume source volume %s does not exist", volumeContentSourceVolumeID)
 			}
+			defer gceCS.volumeLocks.Release(volumeContentSourceVolumeID)
+
+			// // Verify that the volume in VolumeContentSource exists.
+			// diskFromSourceVolume, err := gceCS.CloudProvider.GetDisk(ctx, project, volKey, gceAPIVersion)
+			// if err != nil {
+			// 	if gce.IsGCEError(err, "notFound") {
+			// 		return nil, status.Errorf(codes.NotFound, "CreateVolume source volume %s does not exist", volumeContentSourceVolumeID)
+			// 	} else {
+			// 		return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume unknown get disk error when validating: %v", err))
+			// 	}
+			// }
 			//	Verify the zone, region, and disk type of the clone must be the same as that of the source disk.
-			if err := gce.ValidateDiskParameters(diskFromSourceVolume, params); err != nil {
-				return nil, status.Errorf(codes.InvalidArgument, `CreateVolume source volume parameters do not match CreateVolumeRequest Parameters: %v`, err)
-			}
-			// Verify the source disk is ready.
-			if err == nil {
-				ready, err := isDiskReady(diskFromSourceVolume)
-				if err != nil {
-					return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk from source volume %v had error checking ready status: %v", volKey, err))
-				}
-				if !ready {
-					return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk from source volume %v is not ready", volKey))
-				}
-			}
+			// if err := gce.ValidateDiskParameters(diskFromSourceVolume, params); err != nil {
+			// 	return nil, status.Errorf(codes.InvalidArgument, `CreateVolume source volume parameters do not match CreateVolumeRequest Parameters: %v`, err)
+			// }
+			// // Verify the source disk is ready.
+			// if err == nil {
+			// 	ready, err := isDiskReady(diskFromSourceVolume)
+			// 	if err != nil {
+			// 		return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk from source volume %v had error checking ready status: %v", volKey, err))
+			// 	}
+			// 	if !ready {
+			// 		return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk from source volume %v is not ready", volKey))
+			// 	}
+			// }
 		}
 	}
 	// Create the disk
