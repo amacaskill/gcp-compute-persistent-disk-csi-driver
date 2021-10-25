@@ -57,7 +57,6 @@ func generateDriverConfigFile(testParams *testParameters, storageClassFile strin
 		"topology",
 		"controllerExpansion",
 		"nodeExpansion",
-		"pvcDataSource",
 	}
 	var fsTypes []string
 	if testParams.platform == "windows" {
@@ -117,6 +116,7 @@ func generateDriverConfigFile(testParams *testParameters, storageClassFile strin
 		absSnapshotClassFilePath = filepath.Join(testParams.pkgDir, testConfigDir, testParams.snapshotClassFile)
 	}
 
+	caps = append(caps, "pvcDataSource")
 	minimumVolumeSize := "5Gi"
 	numAllowedTopologies := 1
 	if storageClassFile == regionalPDStorageClass {
