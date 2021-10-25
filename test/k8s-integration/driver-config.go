@@ -57,6 +57,7 @@ func generateDriverConfigFile(testParams *testParameters, storageClassFile strin
 		"topology",
 		"controllerExpansion",
 		"nodeExpansion",
+		"pvcDataSource",
 	}
 	var fsTypes []string
 	if testParams.platform == "windows" {
@@ -76,7 +77,6 @@ func generateDriverConfigFile(testParams *testParameters, storageClassFile strin
 	}
 
 	/* Unsupported Capabilities:
-	   pvcDataSource
 	   RWX
 	   volumeLimits # PD Supports volume limits but test is very slow
 	   singleNodeVolume
