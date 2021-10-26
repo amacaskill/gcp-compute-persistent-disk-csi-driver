@@ -181,7 +181,7 @@ func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.Cre
 		}
 
 		if !ready {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume existing disk %v is not ready", volKey))
+			return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume existing disk %v is not ready. The existing disk %v has status %v. ", volKey, existingDisk, existingDisk.GetStatus()))
 		}
 
 		// If there is no validation error, immediately return success
