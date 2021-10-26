@@ -175,14 +175,13 @@ func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.Cre
 			return nil, status.Error(codes.AlreadyExists, fmt.Sprintf("CreateVolume disk already exists with same name and is incompatible: %v", err))
 		}
 
-		// ready, err := isDiskReady(existingDisk)
-		// if err != nil {
-		// 	return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk %v had error checking ready status: %v", volKey, err))
-		// }
-
-		// if !ready {
-		// 	return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume existing disk %v is not ready. The existing disk %v has status %v. ", volKey, existingDisk, existingDisk.GetStatus()))
-		// }
+		ready, err := isDiskReady(existingDisk)
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk %v had error checking ready status: %v", volKey, err))
+		}
+		if !ready {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume existing disk %v is not ready. Existing disk state= name: %v, ID: %v, status: %v, zone: %v, location-type: %v", volKey, existingDisk.GetName(), existingDisk.GetDiskId(), existingDisk.GetStatus(), existingDisk.GetZone(), existingDisk.LocationType()))
+		}
 
 		// If there is no validation error, immediately return success
 		klog.V(4).Infof("CreateVolume succeeded for disk %v, it already exists and was compatible", volKey)
