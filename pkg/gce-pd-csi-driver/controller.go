@@ -180,7 +180,7 @@ func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.Cre
 			return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk %v had error checking ready status: %v", volKey, err))
 		}
 		if !ready {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume existing disk %v is not ready. Existing disk state= name: %v, ID: %v, status: %v, zone: %v, location-type: %v", volKey, existingDisk.GetName(), existingDisk.GetDiskId(), existingDisk.GetStatus(), existingDisk.GetZone(), existingDisk.LocationType()))
+			return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume existing disk %v is not ready. Existing disk state= name: %v, ID: %v, status: %v, zone: %v, location-type: %v", volKey, existingDisk.GetName(), existingDisk.GetSourceDiskId(), existingDisk.GetStatus(), existingDisk.GetZone(), existingDisk.LocationType()))
 		}
 
 		// If there is no validation error, immediately return success
@@ -225,16 +225,16 @@ func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.Cre
 			if err := gce.ValidateDiskParameters(diskFromSourceVolume, params); err != nil {
 				return nil, status.Errorf(codes.InvalidArgument, `CreateVolume source volume parameters do not match CreateVolumeRequest Parameters: %v`, err)
 			}
-			// // Verify the source disk is ready.
-			// if err == nil {
-			// 	ready, err := isDiskReady(diskFromSourceVolume)
-			// 	if err != nil {
-			// 		return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk from source volume %v had error checking ready status: %v", volKey, err))
-			// 	}
-			// 	if !ready {
-			// 		return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk from source volume %v is not ready", volKey))
-			// 	}
-			// }
+			// Verify the source disk is ready.
+			if err == nil {
+				ready, err := isDiskReady(diskFromSourceVolume)
+				if err != nil {
+					return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk from source volume %v had error checking ready status: %v", volKey, err))
+				}
+				if !ready {
+					return nil, status.Error(codes.Internal, fmt.Sprintf("CreateVolume disk from source volume %v is not ready", volKey))
+				}
+			}
 		}
 	}
 	// Create the disk
@@ -1083,7 +1083,7 @@ func generateCreateVolumeResponse(disk *gce.CloudDisk, zones []string) *csi.Crea
 		},
 	}
 	snapshotID := disk.GetSnapshotId()
-	diskID := disk.GetDiskId()
+	diskID := disk.GetSourceDiskId()
 	if diskID != "" || snapshotID != "" {
 		contentSource := &csi.VolumeContentSource{}
 		if snapshotID != "" {

@@ -177,7 +177,7 @@ func (d *CloudDisk) GetSnapshotId() string {
 	}
 }
 
-func (d *CloudDisk) GetDiskId() string {
+func (d *CloudDisk) GetSourceDiskId() string {
 	switch {
 	case d.disk != nil:
 		return d.disk.SourceDiskId
