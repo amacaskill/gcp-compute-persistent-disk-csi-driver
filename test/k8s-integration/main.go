@@ -76,7 +76,8 @@ var (
 )
 
 const (
-	pdImagePlaceholder        = "gcr.io/alexis-e2e/gcp-compute-persistent-disk-csi-driver"
+	pdImagePlaceholder = "gke.gcr.io/gcp-compute-persistent-disk-csi-driver"
+	// pdImagePlaceholder        = "gcr.io/alexis-e2e/gcp-compute-persistent-disk-csi-driver"
 	k8sInDockerBuildBinDir    = "_output/dockerized/bin/linux/amd64"
 	k8sOutOfDockerBuildBinDir = "_output/bin"
 	externalDriverNamespace   = "gce-pd-csi-driver"
