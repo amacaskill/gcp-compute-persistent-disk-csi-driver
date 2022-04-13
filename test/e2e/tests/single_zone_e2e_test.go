@@ -176,7 +176,7 @@ var _ = Describe("GCE PD CSI Driver", func() {
 					},
 				},
 			}
-			volID, err := testContext.Client.CreateVolume(volName, nil, defaultSizeGb, topReq)
+			volID, err := testContext.Client.CreateVolume(volName, nil, defaultSizeGb, topReq, nil)
 			Expect(err).To(BeNil(), "Failed to create volume")
 			defer func() {
 				err = testContext.Client.DeleteVolume(volID)
@@ -232,7 +232,60 @@ var _ = Describe("GCE PD CSI Driver", func() {
 		volName := testNamePrefix + string(uuid.NewUUID())
 		volID, err := controllerClient.CreateVolume(volName, map[string]string{
 			common.ParameterKeyReplicationType: "regional-pd",
-		}, defaultRepdSizeGb, nil)
+		}, defaultRepdSizeGb, nil, nil)
+		Expect(err).To(BeNil(), "CreateVolume failed with error: %v", err)
+
+		// Validate Disk Created
+		cloudDisk, err := computeService.RegionDisks.Get(p, region, volName).Do()
+		Expect(err).To(BeNil(), "Could not get disk from cloud directly")
+		Expect(cloudDisk.Type).To(ContainSubstring(standardDiskType))
+		Expect(cloudDisk.Status).To(Equal(readyState))
+		Expect(cloudDisk.SizeGb).To(Equal(defaultRepdSizeGb))
+		Expect(cloudDisk.Name).To(Equal(volName))
+		Expect(len(cloudDisk.ReplicaZones)).To(Equal(2))
+		for _, replicaZone := range cloudDisk.ReplicaZones {
+			tokens := strings.Split(replicaZone, "/")
+			actualZone := tokens[len(tokens)-1]
+			gotRegion, err := common.GetRegionFromZones([]string{actualZone})
+			Expect(err).To(BeNil(), "failed to get region from actual zone %v", actualZone)
+			Expect(gotRegion).To(Equal(region), "Got region from replica zone that did not match supplied region")
+		}
+		defer func() {
+			// Delete Disk
+			controllerClient.DeleteVolume(volID)
+			Expect(err).To(BeNil(), "DeleteVolume failed")
+
+			// Validate Disk Deleted
+			_, err = computeService.RegionDisks.Get(p, region, volName).Do()
+			Expect(gce.IsGCEError(err, "notFound")).To(BeTrue(), "Expected disk to not be found")
+		}()
+	})
+
+	It("Should successfully create RePD in two zones cloned from zonal PD", func() {
+		Expect(testContexts).ToNot(BeEmpty())
+		testContext := getRandomTestContext()
+
+		controllerInstance := testContext.Instance
+		controllerClient := testContext.Client
+
+		p, z, _ := controllerInstance.GetIdentity()
+
+		region, err := common.GetRegionFromZones([]string{z})
+		Expect(err).To(BeNil(), "Failed to get region from zones")
+
+		// Create Disk
+		volName := testNamePrefix + string(uuid.NewUUID())
+		volID, err := controllerClient.CreateVolume(volName, map[string]string{
+			common.ParameterKeyReplicationType: "regional-pd",
+		}, defaultRepdSizeGb, nil,
+			&csi.VolumeContentSource{
+				Type: &csi.VolumeContentSource_Volume{
+					Volume: &csi.VolumeContentSource_VolumeSource{
+						VolumeId: fmt.Sprintf("projects/%s/regions/%s/disks/%s", project, region, "srcVolume"),
+					},
+				},
+			})
+
 		Expect(err).To(BeNil(), "CreateVolume failed with error: %v", err)
 
 		// Validate Disk Created
@@ -270,7 +323,7 @@ var _ = Describe("GCE PD CSI Driver", func() {
 
 		// Create Disk
 		volName := testNamePrefix + string(uuid.NewUUID())
-		volID, err := client.CreateVolume(volName, nil, defaultSizeGb, nil)
+		volID, err := client.CreateVolume(volName, nil, defaultSizeGb, nil, nil)
 		Expect(err).To(BeNil(), "CreateVolume failed with error: %v", err)
 
 		// Validate Disk Created
@@ -304,7 +357,7 @@ var _ = Describe("GCE PD CSI Driver", func() {
 		params := map[string]string{
 			common.ParameterKeyLabels: "key1=value1,key2=value2",
 		}
-		volID, err := client.CreateVolume(volName, params, defaultSizeGb, nil)
+		volID, err := client.CreateVolume(volName, params, defaultSizeGb, nil, nil)
 		Expect(err).To(BeNil(), "CreateVolume failed with error: %v", err)
 
 		// Validate Disk Created
@@ -472,7 +525,7 @@ var _ = Describe("GCE PD CSI Driver", func() {
 						Segments: map[string]string{common.TopologyKeyZone: z},
 					},
 				},
-			})
+			}, nil)
 		Expect(err).To(BeNil(), "CreateVolume failed with error: %v", err)
 
 		// Validate Disk Created
@@ -584,7 +637,7 @@ var _ = Describe("GCE PD CSI Driver", func() {
 		volName := testNamePrefix + string(uuid.NewUUID())
 		volID, err := controllerClient.CreateVolume(volName, map[string]string{
 			common.ParameterKeyReplicationType: "regional-pd",
-		}, defaultRepdSizeGb, nil)
+		}, defaultRepdSizeGb, nil, nil)
 		Expect(err).To(BeNil(), "CreateVolume failed with error: %v", err)
 
 		// Validate Disk Created
@@ -800,7 +853,7 @@ var _ = Describe("GCE PD CSI Driver", func() {
 			common.ParameterKeyPVCName:      "test-pvc",
 			common.ParameterKeyPVCNamespace: "test-pvc-namespace",
 			common.ParameterKeyPVName:       "test-pv-name",
-		}, defaultSizeGb, nil /* topReq */)
+		}, defaultSizeGb, nil /* topReq */, nil)
 		Expect(err).To(BeNil(), "CreateVolume failed with error: %v", err)
 
 		// Validate Disk Created
@@ -896,7 +949,7 @@ func createAndValidateUniqueZonalDisk(client *remote.CsiClient, project, zone st
 					Segments: map[string]string{common.TopologyKeyZone: zone},
 				},
 			},
-		})
+		}, nil)
 	Expect(err).To(BeNil(), "CreateVolume failed with error: %v", err)
 
 	// Validate Disk Created
@@ -941,7 +994,7 @@ func createAndValidateUniqueZonalMultiWriterDisk(client *remote.CsiClient, proje
 					Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
 				},
 			},
-		})
+		}, nil)
 	Expect(err).To(BeNil(), "CreateVolume failed with error: %v", err)
 
 	// Validate Disk Created
