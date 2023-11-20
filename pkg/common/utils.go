@@ -87,6 +87,7 @@ var (
 		http.StatusTooManyRequests: codes.ResourceExhausted,
 		http.StatusNotFound:        codes.NotFound,
 	}
+	storagePoolFieldsRegex = regexp.MustCompile(`^projects/([^/]+)/zones/([^/]+)/storagePools/([^/]+)$`)
 )
 
 func BytesToGbRoundDown(bytes int64) int64 {
@@ -176,6 +177,76 @@ func GetRegionFromZones(zones []string) (string, error) {
 		return "", fmt.Errorf("multiple or no regions gotten from zones, got: %v", regions)
 	}
 	return regions.UnsortedList()[0], nil
+}
+
+// TODO(amacaskill): Implement this function.
+// Validate the correct storage pool format here.
+func StoragePoolsFromString(storagePools string) ([]string, error) {
+	return strings.Split(storagePools, ","), nil
+}
+
+// StoragePoolZone returns the zone from the given Storage Pool resource name. The resource
+// name must be in the format projects/project/zones/zone/storagePools/storagePool.
+// All other formats are invalid, and an error will be returned.
+func StoragePoolZone(resourceName string) (string, error) {
+	_, zoneMatch, _, err := FieldsFromStoragePoolResourceName(resourceName)
+	return zoneMatch, err
+}
+
+// FieldsFromResourceName returns the project, zone, and Storage Pool name from the given
+// Storage Pool resource name. The resource name must be in the format
+// projects/project/zones/zone/storagePools/storagePool.
+// All other formats are invalid, and an error will be returned.
+func FieldsFromStoragePoolResourceName(resourceName string) (project, location, spName string, err error) {
+	fieldMatches := storagePoolFieldsRegex.FindStringSubmatch(resourceName)
+	//  Field matches should have 4 strings: [resourceName, project, zone, storagePool]. The first
+	// match is the entire string.
+	if len(fieldMatches) != 4 {
+		err := status.Errorf(codes.InvalidArgument, "invalid Storage Pool resource name. Got %s, expected projects/project/zones/zone/storagePools/storagePool", resourceName)
+		return "", "", "", err
+	}
+	project = fieldMatches[1]
+	location = fieldMatches[2]
+	spName = fieldMatches[3]
+	return
+}
+
+// StoragePoolZones returns the unique zones of the given Storage Pool resource names.
+func StoragePoolZones(resourceNames []string) ([]string, error) {
+	zonesSet := make(map[string]bool)
+	var zones []string
+	for _, name := range resourceNames {
+		zone, err := StoragePoolZone(name)
+		if err != nil {
+			return nil, err
+		}
+		// Throw an error if another Storage Pool has the same zone.
+		if _, exists := zonesSet[zone]; exists {
+			return nil, status.Errorf(codes.InvalidArgument, "found multiple Storage Pools in zone %s. Only one Storage Pool per zone is allowed", zone)
+		}
+		zonesSet[zone] = true
+		zones = append(zones, zone)
+	}
+	return zones, nil
+}
+
+func StoragePoolInZone(storagePools []string, zone string) string {
+	for _, pool := range storagePools {
+		if strings.Contains("/%s/", zone) {
+			return pool
+		}
+	}
+	return ""
+}
+
+func ZonesMatch(zonesA []string, zonesB []string) bool {
+	zonesBSet := sets.NewString(zonesB...)
+	zonesASet := sets.NewString(zonesA...)
+	spZonesNotInReq := zonesASet.Difference(zonesBSet)
+	if spZonesNotInReq.Len() != 0 {
+		return false
+	}
+	return true
 }
 
 func GetDeviceName(volKey *meta.Key) (string, error) {

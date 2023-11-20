@@ -31,6 +31,7 @@ const (
 	ParameterKeyProvisionedThroughputOnCreate = "provisioned-throughput-on-create"
 	ParameterAvailabilityClass                = "availability-class"
 	ParameterKeyEnableConfidentialCompute     = "enable-confidential-storage"
+	ParameterKeyStoragePools                  = "storage-pools"
 
 	// Parameters for VolumeSnapshotClass
 	ParameterKeyStorageLocations = "storage-locations"
@@ -94,6 +95,9 @@ type DiskParameters struct {
 	EnableConfidentialCompute bool
 	// Default: false
 	ForceAttach bool
+	// Values: {[]string}
+	// Default: ""
+	StoragePools []string
 }
 
 // SnapshotParameters contains normalized and defaulted parameters for snapshots
@@ -188,6 +192,14 @@ func ExtractAndDefaultParameters(parameters map[string]string, driverName string
 			}
 
 			p.EnableConfidentialCompute = paramEnableConfidentialCompute
+
+		case ParameterKeyStoragePools:
+			storagePools, err := StoragePoolsFromString(v)
+			if err != nil {
+				return p, fmt.Errorf("parameters contain invalid value for storage-pools parameter: %w", err)
+			}
+
+			p.StoragePools = storagePools
 
 		default:
 			return p, fmt.Errorf("parameters contains invalid option %q", k)

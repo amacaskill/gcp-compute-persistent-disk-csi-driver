@@ -211,6 +211,43 @@ func useVolumeCloning(req *csi.CreateVolumeRequest) bool {
 	return req.VolumeContentSource != nil && req.VolumeContentSource.GetVolume() != nil
 }
 
+func useStoragePools(req *csi.CreateVolumeRequest) bool {
+	return len(req.Parameters["storage-pools"]) > 0
+}
+
+func validateStoragePools(req *csi.CreateVolumeRequest, params common.DiskParameters) error {
+	if params.EnableConfidentialCompute {
+		// Return error confidential compute not supported.
+	}
+
+	if !(params.DiskType == "hyperdisk-balanced" || params.DiskType == "hyperdisk-throughput") {
+		// Return bad request because GCW should have mutates the SC to be set to either HdB or HdT.
+	}
+
+	if params.ReplicationType == replicationTypeRegionalPD {
+		// return error that stroage pools is not supported with regional PD.
+	}
+
+	if useVolumeCloning(req) {
+		// return error that volume cloning is not supported with storage pools
+	}
+
+	// Check that requisite exactly equals the storage pool zones. This means the GCW is working. If not, return BadRequest error?
+	storagePoolZones, err := common.StoragePoolZones(params.StoragePools)
+	if err != nil {
+		return err
+	}
+	reqZones, err := getZonesFromTopology(req.GetAccessibilityRequirements().GetRequisite())
+	if err != nil {
+		return err
+	}
+	if !common.ZonesMatch(storagePoolZones, reqZones) {
+		return status.Errorf(codes.InvalidArgument, "requisite topologies must match storage pool zones. requisite zones: %v, Storage pool zones: %v", reqZones, storagePoolZones)
+	}
+
+	return nil
+}
+
 func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	var err error
 	diskTypeForMetric := metrics.DefaultDiskTypeForMetric
@@ -252,6 +289,14 @@ func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.Cre
 	multiWriter, _ := getMultiWriterFromCapabilities(volumeCapabilities)
 	if multiWriter {
 		gceAPIVersion = gce.GCEAPIVersionBeta
+	}
+
+	storagePoolsEnabled := params.StoragePools != nil
+	if storagePoolsEnabled {
+		if err := validateStoragePools(req, params); err != nil {
+			return nil, err
+		}
+		gceAPIVersion = gce.GCEAPIVersionAlpha
 	}
 
 	// Verify that the regional availability class is only used on regional disks.
@@ -338,11 +383,12 @@ func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.Cre
 	volumeContentSourceVolumeID := ""
 	content := req.GetVolumeContentSource()
 	if content != nil {
+		// For storage pools, only allow restoring from archive / standard snapshots. Snapshot type should be in snapshot.SnapshotType
 		if content.GetSnapshot() != nil {
 			snapshotID = content.GetSnapshot().GetSnapshotId()
 
 			// Verify that snapshot exists
-			sl, err := gceCS.getSnapshotByID(ctx, snapshotID)
+			sl, err := gceCS.getSnapshotByID(ctx, snapshotID, storagePoolsEnabled)
 			if err != nil {
 				return nil, common.LoggedError("CreateVolume failed to get snapshot "+snapshotID+": ", err)
 			} else if len(sl.Entries) == 0 {
@@ -420,7 +466,7 @@ func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.Cre
 		if len(zones) != 1 {
 			return nil, status.Errorf(codes.Internal, "CreateVolume failed to get a single zone for creating zonal disk, instead got: %v", zones)
 		}
-		disk, err = createSingleZoneDisk(ctx, gceCS.CloudProvider, name, zones, params, capacityRange, capBytes, snapshotID, volumeContentSourceVolumeID, multiWriter)
+		disk, err = createSingleZoneDisk(ctx, gceCS.CloudProvider, name, zones, params, capacityRange, capBytes, snapshotID, volumeContentSourceVolumeID, multiWriter, gceAPIVersion)
 		if err != nil {
 			return nil, common.LoggedError("CreateVolume failed to create single zonal disk "+name+": ", err)
 		}
@@ -428,7 +474,7 @@ func (gceCS *GCEControllerServer) CreateVolume(ctx context.Context, req *csi.Cre
 		if len(zones) != 2 {
 			return nil, status.Errorf(codes.Internal, "CreateVolume failed to get a 2 zones for creating regional disk, instead got: %v", zones)
 		}
-		disk, err = createRegionalDisk(ctx, gceCS.CloudProvider, name, zones, params, capacityRange, capBytes, snapshotID, volumeContentSourceVolumeID, multiWriter)
+		disk, err = createRegionalDisk(ctx, gceCS.CloudProvider, name, zones, params, capacityRange, capBytes, snapshotID, volumeContentSourceVolumeID, multiWriter, gceAPIVersion)
 		if err != nil {
 			return nil, common.LoggedError("CreateVolume failed to create regional disk "+name+": ", err)
 		}
@@ -931,6 +977,7 @@ func (gceCS *GCEControllerServer) ControllerGetCapabilities(ctx context.Context,
 	}, nil
 }
 
+// For storage pools, only allow snapshoting type archive / standard snapshots. Snapshot type should be in req.Parameters[snapshot-type].
 func (gceCS *GCEControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
 	var err error
 	diskTypeForMetric := metrics.DefaultDiskTypeForMetric
@@ -1225,7 +1272,7 @@ func (gceCS *GCEControllerServer) DeleteSnapshot(ctx context.Context, req *csi.D
 func (gceCS *GCEControllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
 	// case 1: SnapshotId is not empty, return snapshots that match the snapshot id.
 	if len(req.GetSnapshotId()) != 0 {
-		return gceCS.getSnapshotByID(ctx, req.GetSnapshotId())
+		return gceCS.getSnapshotByID(ctx, req.GetSnapshotId(), false)
 	}
 
 	// case 2: no SnapshotId is set, so we return all the snapshots that satify the reqeust.
@@ -1360,7 +1407,10 @@ func (gceCS *GCEControllerServer) getSnapshots(ctx context.Context, req *csi.Lis
 	return entries, nil
 }
 
-func (gceCS *GCEControllerServer) getSnapshotByID(ctx context.Context, snapshotID string) (*csi.ListSnapshotsResponse, error) {
+// MIght need to check snapshotType here. To make sure its a normal snapshot.
+// We only create standard snapshots (so no work needed in CreateSnapshot), but you can probably preprovision an archive snapshot/instant then use it to createVolume, so need to make sure
+// SnapshotType is standard or archive when storagePools is used.
+func (gceCS *GCEControllerServer) getSnapshotByID(ctx context.Context, snapshotID string, storagePoolsEnabled bool) (*csi.ListSnapshotsResponse, error) {
 	project, snapshotType, key, err := common.SnapshotIDToProjectKey(snapshotID)
 	if err != nil {
 		// Cannot get snapshot ID from the passing request
@@ -1378,6 +1428,10 @@ func (gceCS *GCEControllerServer) getSnapshotByID(ctx context.Context, snapshotI
 				return &csi.ListSnapshotsResponse{}, nil
 			}
 			return nil, common.LoggedError("Failed to list snapshot: ", err)
+		}
+		if storagePoolsEnabled {
+			// then you need to call getsnapshot with v1alpha in order to tell if it is a standard snapshot. I think? Maybe not
+			// if snapshot.SnapshotType == compute.Instant, return error.
 		}
 		e, err := generateDiskSnapshotEntry(snapshot)
 		if err != nil {
@@ -1817,7 +1871,7 @@ func getResourceId(resourceLink string) (string, error) {
 	return strings.Join(elts[3:], "/"), nil
 }
 
-func createRegionalDisk(ctx context.Context, cloudProvider gce.GCECompute, name string, zones []string, params common.DiskParameters, capacityRange *csi.CapacityRange, capBytes int64, snapshotID string, volumeContentSourceVolumeID string, multiWriter bool) (*gce.CloudDisk, error) {
+func createRegionalDisk(ctx context.Context, cloudProvider gce.GCECompute, name string, zones []string, params common.DiskParameters, capacityRange *csi.CapacityRange, capBytes int64, snapshotID string, volumeContentSourceVolumeID string, multiWriter bool, gceAPIVersion gce.GCEAPIVersion) (*gce.CloudDisk, error) {
 	project := cloudProvider.GetDefaultProject()
 	region, err := common.GetRegionFromZones(zones)
 	if err != nil {
@@ -1830,15 +1884,11 @@ func createRegionalDisk(ctx context.Context, cloudProvider gce.GCECompute, name 
 			fullyQualifiedReplicaZones, cloudProvider.GetReplicaZoneURI(project, replicaZone))
 	}
 
-	err = cloudProvider.InsertDisk(ctx, project, meta.RegionalKey(name, region), params, capBytes, capacityRange, fullyQualifiedReplicaZones, snapshotID, volumeContentSourceVolumeID, multiWriter)
+	err = cloudProvider.InsertDisk(ctx, project, meta.RegionalKey(name, region), params, capBytes, capacityRange, fullyQualifiedReplicaZones, snapshotID, volumeContentSourceVolumeID, multiWriter, gceAPIVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert regional disk: %w", err)
 	}
 
-	gceAPIVersion := gce.GCEAPIVersionV1
-	if multiWriter {
-		gceAPIVersion = gce.GCEAPIVersionBeta
-	}
 	disk, err := cloudProvider.GetDisk(ctx, project, meta.RegionalKey(name, region), gceAPIVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get disk after creating regional disk: %w", err)
@@ -1846,21 +1896,17 @@ func createRegionalDisk(ctx context.Context, cloudProvider gce.GCECompute, name 
 	return disk, nil
 }
 
-func createSingleZoneDisk(ctx context.Context, cloudProvider gce.GCECompute, name string, zones []string, params common.DiskParameters, capacityRange *csi.CapacityRange, capBytes int64, snapshotID string, volumeContentSourceVolumeID string, multiWriter bool) (*gce.CloudDisk, error) {
+func createSingleZoneDisk(ctx context.Context, cloudProvider gce.GCECompute, name string, zones []string, params common.DiskParameters, capacityRange *csi.CapacityRange, capBytes int64, snapshotID string, volumeContentSourceVolumeID string, multiWriter bool, gceAPIVersion gce.GCEAPIVersion) (*gce.CloudDisk, error) {
 	project := cloudProvider.GetDefaultProject()
 	if len(zones) != 1 {
 		return nil, fmt.Errorf("got wrong number of zones for zonal create volume: %v", len(zones))
 	}
 	diskZone := zones[0]
-	err := cloudProvider.InsertDisk(ctx, project, meta.ZonalKey(name, diskZone), params, capBytes, capacityRange, nil, snapshotID, volumeContentSourceVolumeID, multiWriter)
+	err := cloudProvider.InsertDisk(ctx, project, meta.ZonalKey(name, diskZone), params, capBytes, capacityRange, nil, snapshotID, volumeContentSourceVolumeID, multiWriter, gceAPIVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert zonal disk: %w", err)
 	}
 
-	gceAPIVersion := gce.GCEAPIVersionV1
-	if multiWriter {
-		gceAPIVersion = gce.GCEAPIVersionBeta
-	}
 	disk, err := cloudProvider.GetDisk(ctx, project, meta.ZonalKey(name, diskZone), gceAPIVersion)
 	if err != nil {
 		return nil, err

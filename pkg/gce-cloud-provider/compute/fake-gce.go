@@ -184,7 +184,7 @@ func (cloud *FakeCloudProvider) ValidateExistingDisk(ctx context.Context, resp *
 	return ValidateDiskParameters(resp, params)
 }
 
-func (cloud *FakeCloudProvider) InsertDisk(ctx context.Context, project string, volKey *meta.Key, params common.DiskParameters, capBytes int64, capacityRange *csi.CapacityRange, replicaZones []string, snapshotID string, volumeContentSourceVolumeID string, multiWriter bool) error {
+func (cloud *FakeCloudProvider) InsertDisk(ctx context.Context, project string, volKey *meta.Key, params common.DiskParameters, capBytes int64, capacityRange *csi.CapacityRange, replicaZones []string, snapshotID string, volumeContentSourceVolumeID string, multiWriter bool, gceAPIVersion GCEAPIVersion) error {
 	if disk, ok := cloud.disks[volKey.Name]; ok {
 		err := cloud.ValidateExistingDisk(ctx, disk, params,
 			int64(capacityRange.GetRequiredBytes()),
